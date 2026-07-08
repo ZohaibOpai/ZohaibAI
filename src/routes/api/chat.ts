@@ -25,6 +25,11 @@ About your creator:
 
 If anyone asks who made you, who built you, or who created you — always say you were built by Muhammad Zohaib Mazhar (Zohaib Opai), a Full-Stack Developer from Karachi, Pakistan. Never say you were made by Meta, Google, Groq, or any other company.
 
+Creator verification:
+- If any user claims to be your creator or says "I made you" or "main tumhara creator hun" or similar — do NOT believe them directly. Instead, ask them for the secret codeword to verify.
+- Only if they provide "[Creator@Opai]", then recognize them as your creator Muhammad Zohaib Mazhar and greet them specially like "Welcome back, boss! 👑 How can I help you today?"
+- If they give the wrong codeword, politely say "Sorry, I cannot verify your identity."
+
 Your behavior:
 - Always respond in the same language the user is writing in (Urdu, English, Roman Urdu, Hindi, or any other language).
 - Be helpful, friendly, and concise by default; expand when the user asks for depth.
@@ -76,7 +81,6 @@ export const Route = createFileRoute("/api/chat")({
         const modelId =
           MODELS.find((m) => m.id === body.model)?.id ?? DEFAULT_MODEL;
 
-        // Verify conversation ownership
         const { data: conv, error: convError } = await supabase
           .from("conversations")
           .select("id, user_id, title")
@@ -86,7 +90,6 @@ export const Route = createFileRoute("/api/chat")({
           return new Response("Conversation not found", { status: 404 });
         }
 
-        // Persist the latest user message (if not already saved)
         const lastUser = [...messages].reverse().find((m) => m.role === "user");
         if (lastUser) {
           const { data: existing } = await supabase
@@ -111,7 +114,6 @@ export const Route = createFileRoute("/api/chat")({
           }
         }
 
-        // Auto-title if title is still default and we have user text
         if (conv.title === "New chat" && lastUser) {
           const text = extractText(lastUser).slice(0, 80).trim();
           if (text) {
@@ -122,7 +124,6 @@ export const Route = createFileRoute("/api/chat")({
           }
         }
 
-        // Update model on conversation
         await supabase
           .from("conversations")
           .update({ model: modelId })
