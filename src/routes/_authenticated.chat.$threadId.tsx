@@ -14,7 +14,7 @@ import {
 import { DEFAULT_MODEL } from "@/lib/models";
 import { Markdown } from "@/components/chat/markdown";
 import { ModelPicker } from "@/components/chat/model-picker";
-import { ArrowUp, ImagePlus, Loader2, Paperclip, Sparkles, Square, X } from "lucide-react";
+import { ArrowUp, Check, Copy, ImagePlus, Loader2, Paperclip, Sparkles, Square, X } from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/chat/$threadId")({
@@ -38,7 +38,6 @@ function ChatThread() {
     retry: false,
   });
 
-  // Redirect on permission / not found
   useEffect(() => {
     if (convQuery.error) {
       toast.error("Conversation unavailable.");
@@ -136,6 +135,17 @@ function ChatThreadInner({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Get user name for welcome message
+  const [userName, setUserName] = useState("");
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      const name = data.user?.user_metadata?.full_name ||
+        data.user?.user_metadata?.name ||
+        data.user?.email?.split("@")[0] || "";
+      setUserName(name);
+    });
+  }, []);
 
   useEffect(() => {
     textareaRef.current?.focus();
@@ -254,6 +264,14 @@ function ChatThreadInner({
 
   const empty = messages.length === 0;
 
+  // Get greeting based on time
+  function getGreeting() {
+    const hour = new Date().getHours();
+    if (hour < 12) return "Good morning";
+    if (hour < 17) return "Good afternoon";
+    return "Good evening";
+  }
+
   return (
     <div className="flex h-full flex-1 flex-col">
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
@@ -263,18 +281,21 @@ function ChatThreadInner({
               <div className="grid h-12 w-12 place-items-center rounded-xl bg-surface text-primary">
                 <Sparkles className="h-5 w-5" />
               </div>
-              <h2 className="mt-4 text-xl font-semibold">How can I help you today?</h2>
+              <h2 className="mt-4 text-xl font-semibold">
+                {userName ? `${getGreeting()}, ${userName.split(" ")[0]}! 👋` : "How can I help you today?"}
+              </h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                Ask anything — type below to begin.
+                {userName ? "I'm Zohaib AI — ask me anything!" : "Ask anything — type below to begin."}
               </p>
               <div className="mt-8 grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2">
                 {SUGGESTIONS.map((s) => (
                   <button
-                    key={s}
-                    onClick={() => setInput(s)}
+                    key={s.label}
+                    onClick={() => setInput(s.prompt)}
                     className="rounded-lg border border-border bg-surface px-3 py-2.5 text-left text-sm text-muted-foreground hover:bg-surface-2 hover:text-foreground"
                   >
-                    {s}
+                    <div className="font-medium text-foreground">{s.label}</div>
+                    <div className="mt-0.5 text-xs">{s.desc}</div>
                   </button>
                 ))}
               </div>
@@ -289,10 +310,15 @@ function ChatThreadInner({
             ))}
             {status === "submitted" && (
               <li>
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <span className="zai-dot" />
-                  <span className="zai-dot" />
-                  <span className="zai-dot" />
+                <div className="flex gap-3">
+                  <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md bg-surface text-primary">
+                    <span className="font-mono text-[11px] font-semibold">Z</span>
+                  </div>
+                  <div className="flex items-center gap-1 pt-1">
+                    <span className="zai-dot" />
+                    <span className="zai-dot" />
+                    <span className="zai-dot" />
+                  </div>
                 </div>
               </li>
             )}
@@ -441,6 +467,40 @@ function attachmentsToFileList(items: Attachment[]): FileList {
   return dt.files;
 }
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("Failed to copy");
+    }
+  };
+
+  return (
+    <button
+      onClick={handleCopy}
+      className="mt-2 flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-surface-2 hover:text-foreground transition"
+      title="Copy response"
+    >
+      {copied ? (
+        <>
+          <Check className="h-3 w-3 text-green-500" />
+          <span className="text-green-500">Copied!</span>
+        </>
+      ) : (
+        <>
+          <Copy className="h-3 w-3" />
+          <span>Copy</span>
+        </>
+      )}
+    </button>
+  );
+}
+
 function MessageView({ message }: { message: UIMessage }) {
   const isUser = message.role === "user";
   const text = message.parts
@@ -480,7 +540,7 @@ function MessageView({ message }: { message: UIMessage }) {
       <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md bg-surface text-primary">
         <span className="font-mono text-[11px] font-semibold">Z</span>
       </div>
-      <div className="min-w-0 flex-1 space-y-3">
+      <div className="min-w-0 flex-1 space-y-1">
         {files.length > 0 && (
           <div className="flex flex-wrap gap-2">
             {files.map((f, i) => (
@@ -500,16 +560,36 @@ function MessageView({ message }: { message: UIMessage }) {
             ))}
           </div>
         )}
-        {text && <Markdown text={text} />}
+        {text && (
+          <>
+            <Markdown text={text} />
+            <CopyButton text={text} />
+          </>
+        )}
       </div>
     </div>
   );
 }
 
 const SUGGESTIONS = [
-  "Explain quantum entanglement like I'm 12",
-  "Draft a friendly follow-up email to a client",
-  "Help me debug a TypeScript generic",
-  "Plan a 3-day trip to Lisbon",
+  {
+    label: "✍️ Write for me",
+    desc: "Email, essay, story, or post",
+    prompt: "Write a professional email to a client following up on a project",
+  },
+  {
+    label: "💻 Help with code",
+    desc: "Debug, explain, or write code",
+    prompt: "Help me debug this JavaScript code:",
+  },
+  {
+    label: "🧠 Explain a topic",
+    desc: "Make anything easy to understand",
+    prompt: "Explain how the internet works in simple terms",
+  },
+  {
+    label: "🌍 Translate text",
+    desc: "Any language, instantly",
+    prompt: "Translate this to Urdu:",
+  },
 ];
-
