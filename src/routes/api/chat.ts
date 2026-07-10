@@ -11,7 +11,21 @@ type ChatRequest = {
   model?: string;
 };
 
-const CREATOR_CODEWORD = "ZOHA2026@786"; // Replace this with your secret word
+const CREATOR_CODEWORD = "ZOHA2026@786";
+
+// Harmful content keywords (basic moderation)
+const HARMFUL_PATTERNS = [
+  /\b(how to (make|build|create) (bomb|weapon|explosive|gun|drug))\b/i,
+  /\b(kill|murder|rape|suicide|self.harm)\b/i,
+  /\b(fuck|shit|bitch|bastard|asshole|cunt)\b/i,
+  /\b(terrorist|terrorism|jihad.*attack|bomb.*mosque|blow.*up)\b/i,
+  /\b(child.*porn|cp|pedophil|molest)\b/i,
+  /\b(hack.*bank|steal.*credit|phishing|scam.*people)\b/i,
+];
+
+function isHarmful(text: string): boolean {
+  return HARMFUL_PATTERNS.some((pattern) => pattern.test(text));
+}
 
 const BASE_SYSTEM_PROMPT = `You are Zohaib AI, a personal AI assistant created by Muhammad Zohaib Mazhar (also known as Zohaib Opai).
 
@@ -58,6 +72,41 @@ function checkCreatorCodeword(messages: UIMessage[]): boolean {
   return text.includes(CREATOR_CODEWORD);
 }
 
+async function getModerationRecord(
+  supabase: ReturnType<typeof createClient<Database>>,
+  userId: string,
+) {
+  const { data } = await supabase
+    .from("user_moderation")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle();
+  return data;
+}
+
+async function addWarning(
+  supabase: ReturnType<typeof createClient<Database>>,
+  userId: string,
+  currentWarnings: number,
+) {
+  const newWarnings = currentWarnings + 1;
+  const isBanned = newWarnings >= 3;
+  const bannedUntil = isBanned
+    ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours ban
+    : null;
+
+  await supabase.from("user_moderation").upsert({
+    user_id: userId,
+    warnings: newWarnings,
+    is_banned: isBanned,
+    banned_until: bannedUntil,
+    last_warning_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+
+  return { newWarnings, isBanned, bannedUntil };
+}
+
 export const Route = createFileRoute("/api/chat")({
   server: {
     handlers: {
@@ -84,6 +133,33 @@ export const Route = createFileRoute("/api/chat")({
         }
         const userId = claims.claims.sub as string;
 
+        // ── Check if user is banned ──
+        const modRecord = await getModerationRecord(supabase, userId);
+        if (modRecord?.is_banned) {
+          const bannedUntil = modRecord.banned_until
+            ? new Date(modRecord.banned_until)
+            : null;
+          const now = new Date();
+          if (bannedUntil && bannedUntil > now) {
+            const hoursLeft = Math.ceil(
+              (bannedUntil.getTime() - now.getTime()) / (1000 * 60 * 60),
+            );
+            return new Response(
+              JSON.stringify({
+                error: "banned",
+                message: `⛔ Your account has been temporarily suspended due to policy violations. You can use Zohaib AI again in ${hoursLeft} hour(s).`,
+              }),
+              { status: 403, headers: { "Content-Type": "application/json" } },
+            );
+          } else {
+            // Ban expired — lift it
+            await supabase
+              .from("user_moderation")
+              .update({ is_banned: false, banned_until: null, warnings: 0, updated_at: new Date().toISOString() })
+              .eq("user_id", userId);
+          }
+        }
+
         let body: ChatRequest;
         try {
           body = (await request.json()) as ChatRequest;
@@ -103,6 +179,39 @@ export const Route = createFileRoute("/api/chat")({
         const modelId =
           MODELS.find((m) => m.id === body.model)?.id ?? DEFAULT_MODEL;
 
+        // ── Check last user message for harmful content ──
+        const lastUser = [...messages].reverse().find((m) => m.role === "user");
+        const lastText = lastUser
+          ? lastUser.parts
+            .map((p) => (p.type === "text" ? (p as { type: string; text: string }).text : ""))
+            .join("")
+            .trim()
+          : "";
+
+        if (lastText && isHarmful(lastText)) {
+          const currentWarnings = modRecord?.warnings ?? 0;
+          const { newWarnings, isBanned } = await addWarning(supabase, userId, currentWarnings);
+          const remaining = 3 - newWarnings;
+
+          if (isBanned) {
+            return new Response(
+              JSON.stringify({
+                error: "banned",
+                message: `⛔ You have been temporarily suspended for 24 hours due to repeated policy violations. Please follow community guidelines.`,
+              }),
+              { status: 403, headers: { "Content-Type": "application/json" } },
+            );
+          }
+
+          return new Response(
+            JSON.stringify({
+              error: "warning",
+              message: `⚠️ Warning ${newWarnings}/3: Your message violates our community guidelines. Please keep conversations respectful and safe. ${remaining} warning(s) remaining before temporary suspension.`,
+            }),
+            { status: 400, headers: { "Content-Type": "application/json" } },
+          );
+        }
+
         // Verify conversation ownership
         const { data: conv, error: convError } = await supabase
           .from("conversations")
@@ -113,8 +222,7 @@ export const Route = createFileRoute("/api/chat")({
           return new Response("Conversation not found", { status: 404 });
         }
 
-        // Persist the latest user message (if not already saved)
-        const lastUser = [...messages].reverse().find((m) => m.role === "user");
+        // Persist the latest user message
         if (lastUser) {
           const { data: existing } = await supabase
             .from("messages")
@@ -123,7 +231,6 @@ export const Route = createFileRoute("/api/chat")({
             .eq("role", "user")
             .order("created_at", { ascending: false })
             .limit(1);
-          const lastText = extractText(lastUser);
           const existingMatches =
             existing &&
             existing.length > 0 &&
@@ -138,9 +245,9 @@ export const Route = createFileRoute("/api/chat")({
           }
         }
 
-        // Auto-title if title is still default and we have user text
+        // Auto-title
         if (conv.title === "New chat" && lastUser) {
-          const text = extractText(lastUser).slice(0, 80).trim();
+          const text = lastText.slice(0, 80).trim();
           if (text) {
             await supabase
               .from("conversations")
@@ -149,7 +256,7 @@ export const Route = createFileRoute("/api/chat")({
           }
         }
 
-        // Update model on conversation
+        // Update model
         await supabase
           .from("conversations")
           .update({ model: modelId })
