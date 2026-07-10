@@ -399,7 +399,7 @@ function ChatThreadInner({
               onKeyDown={onKeyDown}
               rows={1}
               placeholder={imageMode ? "Describe an image to generate…" : "Message Zohaib AI…"}
-              className="max-h-48 min-h-[36px] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
+              className="max-h-48 min-h-36px flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
               disabled={isBusy}
             />
             {isBusy ? (
