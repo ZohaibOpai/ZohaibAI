@@ -6,13 +6,44 @@ import {
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
-import { useEffect, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider } from "@/lib/auth-context";
 
+// ── Theme Context ──
+type Theme = "dark" | "light";
+
+const ThemeContext = createContext<{
+  theme: Theme;
+  toggleTheme: () => void;
+}>({ theme: "dark", toggleTheme: () => {} });
+
+export function useTheme() {
+  return useContext(ThemeContext);
+}
+
+function ThemeProvider({ children }: { children: ReactNode }) {
+  const [theme, setTheme] = useState<Theme>(() => {
+    if (typeof window === "undefined") return "dark";
+    return (localStorage.getItem("zai-theme") as Theme) ?? "dark";
+  });
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.remove("dark", "light");
+    root.classList.add(theme);
+    localStorage.setItem("zai-theme", theme);
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+
+  return <ThemeContext.Provider value={{ theme, toggleTheme }}>{children}</ThemeContext.Provider>;
+}
+
+// ── Not Found ──
 function NotFoundComponent() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
@@ -35,6 +66,7 @@ function NotFoundComponent() {
   );
 }
 
+// ── Error ──
 function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   console.error(error);
   const router = useRouter();
@@ -73,6 +105,7 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   );
 }
 
+// ── Route ──
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   head: () => ({
     meta: [
@@ -82,23 +115,21 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       {
         name: "description",
         content:
-          "Zohaib AI is a multi-model AI chat workspace. Stream conversations across GPT-5, Gemini, and more in one focused, dark, minimal interface.",
+          "Zohaib AI is a multi-model AI chat workspace. Stream conversations across multiple models in one focused, minimal interface.",
       },
       { name: "author", content: "Zohaib AI" },
       { property: "og:title", content: "Zohaib AI — your unified AI workspace" },
       {
         property: "og:description",
-        content:
-          "Multi-model AI chat in one focused, dark, minimal workspace.",
+        content: "Multi-model AI chat in one focused, minimal workspace.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
       { name: "twitter:title", content: "Zohaib AI — your unified AI workspace" },
-      { name: "description", content: "Effortless SaaS Builder creates custom SaaS applications based on your product requirements." },
-      { property: "og:description", content: "Effortless SaaS Builder creates custom SaaS applications based on your product requirements." },
-      { name: "twitter:description", content: "Effortless SaaS Builder creates custom SaaS applications based on your product requirements." },
-      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/11d0d11c-c878-444d-a3c9-feaf042b2c75/id-preview-23462feb--3b3ccaf1-f047-4248-ac61-7e02d224545f.lovable.app-1782562309120.png" },
-      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/11d0d11c-c878-444d-a3c9-feaf042b2c75/id-preview-23462feb--3b3ccaf1-f047-4248-ac61-7e02d224545f.lovable.app-1782562309120.png" },
+      {
+        name: "twitter:description",
+        content: "Multi-model AI chat in one focused, minimal workspace.",
+      },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
@@ -133,10 +164,12 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <Outlet />
-        <Toaster />
-      </AuthProvider>
+      <ThemeProvider>
+        <AuthProvider>
+          <Outlet />
+          <Toaster />
+        </AuthProvider>
+      </ThemeProvider>
     </QueryClientProvider>
   );
 }

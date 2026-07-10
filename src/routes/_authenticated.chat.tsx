@@ -9,10 +9,23 @@ import {
   renameConversation,
 } from "@/lib/conversations.functions";
 import { useAuth } from "@/lib/auth-context";
-import { Plus, MessageSquare, Trash2, LogOut, Loader2, Pencil, Check, X, Menu } from "lucide-react";
+import {
+  Plus,
+  MessageSquare,
+  Trash2,
+  LogOut,
+  Loader2,
+  Pencil,
+  Check,
+  X,
+  Menu,
+  Moon,
+  Sun,
+} from "lucide-react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useTheme } from "@/routes/__root";
 
 export const Route = createFileRoute("/_authenticated/chat")({
   component: ChatLayout,
@@ -26,6 +39,7 @@ function ChatLayout() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const { user, signOut } = useAuth();
+  const { theme, toggleTheme } = useTheme();
 
   const params = useParams({ strict: false }) as { threadId?: string };
   const activeId = params.threadId;
@@ -70,15 +84,10 @@ function ChatLayout() {
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background">
-      {/* Mobile overlay */}
       {isMobile && sidebarOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black/50"
-          onClick={() => setSidebarOpen(false)}
-        />
+        <div className="fixed inset-0 z-40 bg-black/50" onClick={() => setSidebarOpen(false)} />
       )}
 
-      {/* Sidebar */}
       <aside
         className={`flex w-72 shrink-0 flex-col border-r border-border bg-surface transition-transform duration-200 ${
           isMobile
@@ -93,15 +102,25 @@ function ChatLayout() {
             </div>
             <span className="text-sm font-medium">Zohaib AI</span>
           </Link>
-          {isMobile && (
+          <div className="flex items-center gap-1">
             <button
-              onClick={() => setSidebarOpen(false)}
+              onClick={toggleTheme}
               className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-              aria-label="Close sidebar"
+              aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+              title={theme === "dark" ? "Light mode" : "Dark mode"}
             >
-              <X className="h-4 w-4" />
+              {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </button>
-          )}
+            {isMobile && (
+              <button
+                onClick={() => setSidebarOpen(false)}
+                className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                aria-label="Close sidebar"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="px-3">
@@ -253,6 +272,13 @@ function ChatLayout() {
               <Menu className="h-5 w-5" />
             </button>
             <span className="text-sm font-medium">Zohaib AI</span>
+            <button
+              onClick={toggleTheme}
+              className="ml-auto rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+              aria-label="Toggle theme"
+            >
+              {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            </button>
           </div>
         )}
         <Outlet />
