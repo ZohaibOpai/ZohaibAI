@@ -103,6 +103,48 @@ export type Database = {
         }
         Relationships: []
       }
+      // ✅ YEH ADD KIYA HAI - user_moderation TABLE
+      user_moderation: {
+        Row: {
+          id: string
+          user_id: string
+          warnings: number
+          is_banned: boolean
+          banned_until: string | null
+          last_warning_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          warnings?: number
+          is_banned?: boolean
+          banned_until?: string | null
+          last_warning_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          warnings?: number
+          is_banned?: boolean
+          banned_until?: string | null
+          last_warning_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "user_moderation_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
     }
     Views: {
       [_ in never]: never

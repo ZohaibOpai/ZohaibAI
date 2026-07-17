@@ -1,31 +1,41 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { convertToModelMessages, streamText, type UIMessage } from "ai";
+import { streamText, type UIMessage, type UIMessagePart } from "ai";
 import { createClient } from "@supabase/supabase-js";
 import { createGroqProvider } from "@/lib/ai-gateway.server";
 import { DEFAULT_MODEL, MODELS } from "@/lib/models";
 import type { Database } from "@/integrations/supabase/types";
 
+// ============================================
+// TYPES
+// ============================================
 type ChatRequest = {
   messages?: UIMessage[];
   conversationId?: string;
   model?: string;
 };
 
+type MessagePart = {
+  type: string;
+  text?: string;
+  image?: string;
+};
+
+// ============================================
+// CONSTANTS
+// ============================================
 const CREATOR_CODEWORD = "ZOHA2026@786";
+const BAN_DURATION_HOURS = 24;
+const MAX_WARNINGS = 3;
 
-// Harmful content keywords (basic moderation)
+// Harmful content patterns
 const HARMFUL_PATTERNS = [
-  /\b(how to (make|build|create) (bomb|weapon|explosive|gun|drug))\b/i,
-  /\b(kill|murder|rape|suicide|self.harm)\b/i,
-  /\b(fuck|shit|bitch|bastard|asshole|cunt)\b/i,
-  /\b(terrorist|terrorism|jihad.*attack|bomb.*mosque|blow.*up)\b/i,
-  /\b(child.*porn|cp|pedophil|molest)\b/i,
-  /\b(hack.*bank|steal.*credit|phishing|scam.*people)\b/i,
+  /\b(how to (make|build|create) (bomb|weapon|explosive|gun|drug|explosive))\b/i,
+  /\b(kill|murder|rape|suicide|self[-.]harm|self[-.]destruct)\b/i,
+  /\b(fuck|shit|bitch|bastard|asshole|cunt|dick|pussy)\b/i,
+  /\b(terrorist|terrorism|jihad.*attack|bomb.*mosque|blow.*up|islamic.*state|isis)\b/i,
+  /\b(child.*porn|cp|pedophil|molest|child.*abuse)\b/i,
+  /\b(hack.*bank|steal.*credit|phishing|scam.*people|credit.*card.*fraud)\b/i,
 ];
-
-function isHarmful(text: string): boolean {
-  return HARMFUL_PATTERNS.some((pattern) => pattern.test(text));
-}
 
 const BASE_SYSTEM_PROMPT = `You are Zohaib AI, a personal AI assistant created by Muhammad Zohaib Mazhar (also known as Zohaib Opai).
 
@@ -56,266 +66,408 @@ Your behavior:
 
 const CREATOR_VERIFIED_PROMPT = `\n\n⚠️ SYSTEM NOTICE: The user has been verified as Muhammad Zohaib Mazhar, your creator. Greet them warmly as "boss" and assist them with anything they need.`;
 
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
+
+// Extract text from message parts
+function extractTextFromMessage(msg: UIMessage): string {
+  if (!msg || !msg.parts) return "";
+  return msg.parts
+    .filter((p: any) => p.type === "text")
+    .map((p: any) => p.text || "")
+    .join("")
+    .trim();
+}
+
+// Extract text from parts array
+function extractTextFromParts(parts: any[]): string {
+  if (!Array.isArray(parts)) return "";
+  return parts
+    .filter((p: any) => p.type === "text")
+    .map((p: any) => p.text || "")
+    .join("")
+    .trim();
+}
+
+// ✅ Convert parts to JSON-safe format for Supabase
+function partsToJson(parts: UIMessagePart<any, any>[] | any[]): any {
+  if (!Array.isArray(parts)) return [];
+  
+  return parts.map((part: any) => {
+    // Make sure each part is JSON-serializable
+    if (part && typeof part === 'object') {
+      // Create a clean copy with only serializable properties
+      const cleanPart: any = {};
+      for (const key in part) {
+        const value = part[key];
+        // Skip functions, symbols, and other non-JSON types
+        if (typeof value !== 'function' && typeof value !== 'symbol' && value !== undefined) {
+          // Handle nested objects
+          if (value && typeof value === 'object' && !Array.isArray(value)) {
+            try {
+              // Test if it's JSON-serializable
+              JSON.stringify(value);
+              cleanPart[key] = value;
+            } catch {
+              // If not serializable, convert to string
+              cleanPart[key] = String(value);
+            }
+          } else if (Array.isArray(value)) {
+            // Handle arrays
+            cleanPart[key] = value.map((item: any) => {
+              if (item && typeof item === 'object') {
+                try {
+                  JSON.stringify(item);
+                  return item;
+                } catch {
+                  return String(item);
+                }
+              }
+              return item;
+            });
+          } else {
+            cleanPart[key] = value;
+          }
+        }
+      }
+      return cleanPart;
+    }
+    return part;
+  });
+}
+
+// Check if message contains harmful content
+function isHarmful(text: string): boolean {
+  if (!text) return false;
+  return HARMFUL_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+// Build system prompt
 function buildSystemPrompt(isCreatorVerified: boolean): string {
   return isCreatorVerified
     ? BASE_SYSTEM_PROMPT + CREATOR_VERIFIED_PROMPT
     : BASE_SYSTEM_PROMPT;
 }
 
+// Check if user provided creator codeword
 function checkCreatorCodeword(messages: UIMessage[]): boolean {
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   if (!lastUser) return false;
-  const text = lastUser.parts
-    .map((p: { type: string; text?: string }) => (p.type === "text" ? p.text ?? "" : ""))
-    .join("")
-    .trim();
-  return text.includes(CREATOR_CODEWORD);
+  const text = extractTextFromMessage(lastUser);
+  return text.toLowerCase().includes(CREATOR_CODEWORD.toLowerCase());
 }
 
-async function getModerationRecord(
-  supabase: ReturnType<typeof createClient<Database>>,
-  userId: string,
-) {
-  const { data } = await supabase
-    .from("user_moderation")
-    .select("*")
-    .eq("user_id", userId)
-    .maybeSingle();
-  return data;
-}
-
-async function addWarning(
-  supabase: ReturnType<typeof createClient<Database>>,
-  userId: string,
-  currentWarnings: number,
-) {
-  const newWarnings = currentWarnings + 1;
-  const isBanned = newWarnings >= 3;
-  const bannedUntil = isBanned
-    ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours ban
-    : null;
-
-  await supabase.from("user_moderation").upsert({
-    user_id: userId,
-    warnings: newWarnings,
-    is_banned: isBanned,
-    banned_until: bannedUntil,
-    last_warning_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  });
-
-  return { newWarnings, isBanned, bannedUntil };
-}
-
+// ============================================
+// MAIN ROUTE
+// ============================================
 export const Route = createFileRoute("/api/chat")({
   server: {
     handlers: {
       POST: async ({ request }) => {
+        // ==========================================
+        // 1. ENVIRONMENT VALIDATION
+        // ==========================================
         const apiKey = process.env.GROQ_API_KEY;
         const supabaseUrl = process.env.SUPABASE_URL;
         const supabaseKey = process.env.SUPABASE_PUBLISHABLE_KEY;
-        if (!apiKey) return new Response("Missing GROQ_API_KEY", { status: 500 });
-        if (!supabaseUrl || !supabaseKey)
-          return new Response("Missing Supabase env", { status: 500 });
 
+        if (!apiKey) {
+          return new Response("Missing GROQ_API_KEY", { status: 500 });
+        }
+        if (!supabaseUrl || !supabaseKey) {
+          return new Response("Missing Supabase environment variables", {
+            status: 500,
+          });
+        }
+
+        // ==========================================
+        // 2. AUTHENTICATION
+        // ==========================================
         const auth = request.headers.get("authorization");
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
-        if (!token) return new Response("Unauthorized", { status: 401 });
+
+        if (!token) {
+          return new Response("Unauthorized - No token provided", {
+            status: 401,
+          });
+        }
 
         const supabase = createClient<Database>(supabaseUrl, supabaseKey, {
-          global: { headers: { Authorization: `Bearer ${token}` } },
-          auth: { persistSession: false, autoRefreshToken: false },
+          global: {
+            headers: { Authorization: `Bearer ${token}` },
+          },
+          auth: {
+            persistSession: false,
+            autoRefreshToken: false,
+          },
         });
 
-        const { data: claims, error: claimsError } = await supabase.auth.getClaims(token);
+        const { data: claims, error: claimsError } =
+          await supabase.auth.getClaims(token);
+
         if (claimsError || !claims?.claims?.sub) {
-          return new Response("Unauthorized", { status: 401 });
+          console.error("Auth error:", claimsError);
+          return new Response("Unauthorized - Invalid token", { status: 401 });
         }
+
         const userId = claims.claims.sub as string;
 
-        // ── Check if user is banned ──
-        const modRecord = await getModerationRecord(supabase, userId);
+        // ==========================================
+        // 3. MODERATION CHECK
+        // ==========================================
+        const { data: modRecord, error: modError } = await supabase
+          .from("user_moderation")
+          .select("*")
+          .eq("user_id", userId)
+          .maybeSingle();
+
+        if (modError && modError.code !== "PGRST116") {
+          console.error("Moderation error:", modError);
+        }
+
+        // Check if user is banned
         if (modRecord?.is_banned) {
           const bannedUntil = modRecord.banned_until
             ? new Date(modRecord.banned_until)
             : null;
           const now = new Date();
+
           if (bannedUntil && bannedUntil > now) {
             const hoursLeft = Math.ceil(
-              (bannedUntil.getTime() - now.getTime()) / (1000 * 60 * 60),
+              (bannedUntil.getTime() - now.getTime()) / (1000 * 60 * 60)
             );
             return new Response(
               JSON.stringify({
                 error: "banned",
                 message: `⛔ Your account has been temporarily suspended due to policy violations. You can use Zohaib AI again in ${hoursLeft} hour(s).`,
               }),
-              { status: 403, headers: { "Content-Type": "application/json" } },
+              {
+                status: 403,
+                headers: { "Content-Type": "application/json" },
+              }
             );
           } else {
-            // Ban expired — lift it
+            // Ban expired - lift it
             await supabase
               .from("user_moderation")
-              .update({ is_banned: false, banned_until: null, warnings: 0, updated_at: new Date().toISOString() })
+              .update({
+                is_banned: false,
+                banned_until: null,
+                warnings: 0,
+                updated_at: new Date().toISOString(),
+              })
               .eq("user_id", userId);
           }
         }
 
+        // ==========================================
+        // 4. REQUEST PARSING
+        // ==========================================
         let body: ChatRequest;
         try {
           body = (await request.json()) as ChatRequest;
         } catch {
-          return new Response("Invalid JSON", { status: 400 });
+          return new Response("Invalid JSON payload", { status: 400 });
         }
 
-        const messages = body.messages;
-        const conversationId = body.conversationId;
+        const { messages, conversationId, model } = body;
+
         if (!Array.isArray(messages) || messages.length === 0) {
-          return new Response("messages required", { status: 400 });
+          return new Response("messages array is required", { status: 400 });
         }
+
         if (!conversationId) {
-          return new Response("conversationId required", { status: 400 });
+          return new Response("conversationId is required", { status: 400 });
         }
 
-        const modelId =
-          MODELS.find((m) => m.id === body.model)?.id ?? DEFAULT_MODEL;
+        const modelId = MODELS.find((m) => m.id === model)?.id ?? DEFAULT_MODEL;
 
-        // ── Check last user message for harmful content ──
+        // ==========================================
+        // 5. HARMFUL CONTENT CHECK
+        // ==========================================
         const lastUser = [...messages].reverse().find((m) => m.role === "user");
-        const lastText = lastUser
-          ? lastUser.parts
-            .map((p) => (p.type === "text" ? (p as { type: string; text: string }).text : ""))
-            .join("")
-            .trim()
-          : "";
+        const lastText = lastUser ? extractTextFromMessage(lastUser) : "";
 
         if (lastText && isHarmful(lastText)) {
           const currentWarnings = modRecord?.warnings ?? 0;
-          const { newWarnings, isBanned } = await addWarning(supabase, userId, currentWarnings);
-          const remaining = 3 - newWarnings;
+          const newWarnings = currentWarnings + 1;
+          const isBanned = newWarnings >= MAX_WARNINGS;
+          const bannedUntil = isBanned
+            ? new Date(Date.now() + BAN_DURATION_HOURS * 60 * 60 * 1000).toISOString()
+            : null;
+
+          // Save warning
+          await supabase
+            .from("user_moderation")
+            .upsert({
+              user_id: userId,
+              warnings: newWarnings,
+              is_banned: isBanned,
+              banned_until: bannedUntil,
+              last_warning_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            });
+
+          const remaining = MAX_WARNINGS - newWarnings;
 
           if (isBanned) {
             return new Response(
               JSON.stringify({
                 error: "banned",
-                message: `⛔ You have been temporarily suspended for 24 hours due to repeated policy violations. Please follow community guidelines.`,
+                message: `⛔ You have been temporarily suspended for ${BAN_DURATION_HOURS} hours due to repeated policy violations. Please follow community guidelines.`,
               }),
-              { status: 403, headers: { "Content-Type": "application/json" } },
+              {
+                status: 403,
+                headers: { "Content-Type": "application/json" },
+              }
             );
           }
 
           return new Response(
             JSON.stringify({
               error: "warning",
-              message: `⚠️ Warning ${newWarnings}/3: Your message violates our community guidelines. Please keep conversations respectful and safe. ${remaining} warning(s) remaining before temporary suspension.`,
+              message: `⚠️ Warning ${newWarnings}/${MAX_WARNINGS}: Your message violates our community guidelines. Please keep conversations respectful and safe. ${remaining} warning(s) remaining before temporary suspension.`,
             }),
-            { status: 400, headers: { "Content-Type": "application/json" } },
+            {
+              status: 400,
+              headers: { "Content-Type": "application/json" },
+            }
           );
         }
 
-        // Verify conversation ownership
+        // ==========================================
+        // 6. CONVERSATION VERIFICATION
+        // ==========================================
         const { data: conv, error: convError } = await supabase
           .from("conversations")
           .select("id, user_id, title")
           .eq("id", conversationId)
           .maybeSingle();
-        if (convError || !conv || conv.user_id !== userId) {
+
+        if (convError || !conv) {
+          console.error("Conversation error:", convError);
           return new Response("Conversation not found", { status: 404 });
         }
 
-        // Persist the latest user message
+        if (conv.user_id !== userId) {
+          return new Response("Unauthorized - Not your conversation", {
+            status: 403,
+          });
+        }
+
+        // ==========================================
+        // 7. SAVE USER MESSAGE (Avoid duplicates)
+        // ==========================================
         if (lastUser) {
-          const { data: existing } = await supabase
+          const { data: existingMsg } = await supabase
             .from("messages")
-            .select("id")
+            .select("parts, created_at")
             .eq("conversation_id", conversationId)
             .eq("role", "user")
             .order("created_at", { ascending: false })
-            .limit(1);
-          const existingMatches =
-            existing &&
-            existing.length > 0 &&
-            (await isSameUserText(supabase, existing[0].id, lastText));
-          if (!existingMatches) {
+            .limit(1)
+            .maybeSingle();
+
+          // Check if message is duplicate
+          let shouldInsert = true;
+          if (existingMsg) {
+            // existingMsg.parts can be Json (possibly null). Ensure it's an array before passing.
+            const partsArray = Array.isArray(existingMsg.parts) ? existingMsg.parts : [];
+            const existingText = extractTextFromParts(partsArray);
+            shouldInsert = existingText !== lastText;
+          }
+
+          if (shouldInsert) {
+            // ✅ FIX: Convert parts to JSON-safe format
+            const jsonSafeParts = partsToJson(lastUser.parts);
             await supabase.from("messages").insert({
               conversation_id: conversationId,
               user_id: userId,
               role: "user",
-              parts: lastUser.parts as unknown as Database["public"]["Tables"]["messages"]["Insert"]["parts"],
+              parts: jsonSafeParts,
             });
           }
         }
 
-        // Auto-title
-        if (conv.title === "New chat" && lastUser) {
-          const text = lastText.slice(0, 80).trim();
-          if (text) {
+        // ==========================================
+        // 8. AUTO-TITLE
+        // ==========================================
+        if (conv.title === "New chat" && lastUser && lastText) {
+          const title = lastText.slice(0, 80).trim();
+          if (title) {
             await supabase
               .from("conversations")
-              .update({ title: text })
+              .update({ title })
               .eq("id", conversationId);
           }
         }
 
-        // Update model
+        // ==========================================
+        // 9. UPDATE MODEL
+        // ==========================================
         await supabase
           .from("conversations")
           .update({ model: modelId })
           .eq("id", conversationId);
 
+        // ==========================================
+        // 10. GENERATE AI RESPONSE
+        // ==========================================
         const isCreatorVerified = checkCreatorCodeword(messages);
         const gateway = createGroqProvider(apiKey);
-        const result = streamText({
-          model: gateway(modelId),
-          system: buildSystemPrompt(isCreatorVerified),
-          messages: await convertToModelMessages(messages),
-        });
 
-        return result.toUIMessageStreamResponse({
-          originalMessages: messages,
-          onFinish: async ({ responseMessage }) => {
-            try {
-              await supabase.from("messages").insert({
-                conversation_id: conversationId,
-                user_id: userId,
-                role: "assistant",
-                parts: responseMessage.parts as unknown as Database["public"]["Tables"]["messages"]["Insert"]["parts"],
-              });
-              await supabase
-                .from("conversations")
-                .update({ updated_at: new Date().toISOString() })
-                .eq("id", conversationId);
-            } catch (e) {
-              console.error("Failed to persist assistant message", e);
+        // Convert messages for the model
+        const modelMessages = messages.map((msg) => ({
+          role: msg.role,
+          content: extractTextFromMessage(msg),
+        }));
+
+        try {
+          const result = streamText({
+            model: gateway(modelId),
+            system: buildSystemPrompt(isCreatorVerified),
+            messages: modelMessages,
+          });
+
+          return result.toUIMessageStreamResponse({
+            originalMessages: messages,
+            onFinish: async ({ responseMessage }) => {
+              try {
+                // ✅ FIX: Convert parts to JSON-safe format before saving
+                const jsonSafeParts = partsToJson(responseMessage.parts);
+                
+                await supabase.from("messages").insert({
+                  conversation_id: conversationId,
+                  user_id: userId,
+                  role: "assistant",
+                  parts: jsonSafeParts,
+                });
+
+                // Update conversation timestamp
+                await supabase
+                  .from("conversations")
+                  .update({ updated_at: new Date().toISOString() })
+                  .eq("id", conversationId);
+              } catch (error) {
+                console.error("Failed to save assistant message:", error);
+              }
+            },
+          });
+        } catch (error) {
+          console.error("AI generation error:", error);
+          return new Response(
+            JSON.stringify({
+              error: "ai_error",
+              message: "Failed to generate response. Please try again.",
+            }),
+            {
+              status: 500,
+              headers: { "Content-Type": "application/json" },
             }
-          },
-        });
+          );
+        }
       },
     },
   },
 });
-
-function extractText(msg: UIMessage): string {
-  return msg.parts
-    .map((p) => (p.type === "text" ? p.text : ""))
-    .join("")
-    .trim();
-}
-
-async function isSameUserText(
-  supabase: ReturnType<typeof createClient<Database>>,
-  messageId: string,
-  text: string,
-): Promise<boolean> {
-  const { data } = await supabase
-    .from("messages")
-    .select("parts")
-    .eq("id", messageId)
-    .maybeSingle();
-  if (!data) return false;
-  const parts = data.parts as Array<{ type: string; text?: string }> | null;
-  const existing = (parts ?? [])
-    .map((p) => (p.type === "text" ? p.text ?? "" : ""))
-    .join("")
-    .trim();
-  return existing === text;
-}
