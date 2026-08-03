@@ -1,6 +1,5 @@
-import { createRouter } from "@tanstack/react-router";
-import { QueryClient } from "@tanstack/react-query";
-import { routeTree } from "./routeTree.gen";
+import { createStartHandler, defaultStreamHandler } from "@tanstack/react-start/server";
+import { createServerEntry } from "@tanstack/react-start/server-entry";
 import * as Sentry from "@sentry/node";
 
 // ============================================
@@ -11,22 +10,6 @@ Sentry.init({
   environment: process.env.NODE_ENV || 'development',
   tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
   profilesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
-});
-
-// ============================================
-// QUERY CLIENT
-// ============================================
-const queryClient = new QueryClient();
-
-// ============================================
-// ROUTER
-// ============================================
-export const router = createRouter({
-  routeTree,
-  context: {
-    queryClient,
-    // ✅ Context add karo
-  },
 });
 
 // ============================================
@@ -43,10 +26,10 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 // ============================================
-// EXPORT SERVER
+// EXPORT SERVER HANDLER
 // ============================================
-declare module '@tanstack/react-router' {
-  interface Register {
-    router: typeof router;
-  }
-}
+const fetch = createStartHandler(defaultStreamHandler);
+
+export default createServerEntry({
+  fetch,
+});
