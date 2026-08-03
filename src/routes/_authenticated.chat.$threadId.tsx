@@ -14,7 +14,7 @@ import {
 import { DEFAULT_MODEL } from "@/lib/models";
 import { Markdown } from "@/components/chat/markdown";
 import { ModelPicker } from "@/components/chat/model-picker";
-import { ArrowUp, Check, Copy, ImagePlus, Loader2, Paperclip, Sparkles, Square, X } from "lucide-react";
+import { ArrowUp, Check, Copy, ImagePlus, Loader2, Paperclip, RefreshCw, Sparkles, Square, X } from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/chat/$threadId")({
@@ -116,7 +116,7 @@ function ChatThreadInner({
     [threadId],
   );
 
-  const { messages, sendMessage, setMessages, status, error, stop } = useChat({
+  const { messages, sendMessage, setMessages, status, error, stop, regenerate } = useChat({
     id: threadId,
     messages: initialMessages,
     transport,
@@ -303,9 +303,13 @@ function ChatThreadInner({
           )}
 
           <ul className="space-y-6">
-            {messages.map((m) => (
+            {messages.map((m, i) => (
               <li key={m.id}>
-                <MessageView message={m} />
+                <MessageView
+                  message={m}
+                  isLast={i === messages.length - 1 && m.role === "assistant"}
+                  onRegenerate={() => regenerate({ messageId: m.id })}
+                />
               </li>
             ))}
             {status === "submitted" && (
@@ -501,7 +505,15 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function MessageView({ message }: { message: UIMessage }) {
+function MessageView({
+  message,
+  onRegenerate,
+  isLast,
+}: {
+  message: UIMessage;
+  onRegenerate?: () => void;
+  isLast?: boolean;
+}) {
   const isUser = message.role === "user";
   const text = message.parts
     .map((p) => (p.type === "text" ? p.text : ""))
@@ -563,7 +575,19 @@ function MessageView({ message }: { message: UIMessage }) {
         {text && (
           <>
             <Markdown text={text} />
-            <CopyButton text={text} />
+            <div className="flex items-center gap-1">
+              <CopyButton text={text} />
+              {isLast && onRegenerate && (
+                <button
+                  onClick={onRegenerate}
+                  className="mt-2 flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-surface-2 hover:text-foreground transition"
+                  title="Regenerate response"
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  <span>Regenerate</span>
+                </button>
+              )}
+            </div>
           </>
         )}
       </div>
