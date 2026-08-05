@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
+import SpeechRecognition, { useSpeechRecognition } from "react-speech-recognition";
 import { z } from "zod";
 import { supabase } from "@/integrations/supabase/client";
 import {
@@ -14,7 +15,21 @@ import {
 import { DEFAULT_MODEL } from "@/lib/models";
 import { Markdown } from "@/components/chat/markdown";
 import { ModelPicker } from "@/components/chat/model-picker";
-import { ArrowUp, Check, Copy, ImagePlus, Loader2, Paperclip, Pencil, RefreshCw, Sparkles, Square, X } from "lucide-react";
+import {
+  ArrowUp,
+  Check,
+  Copy,
+  ImagePlus,
+  Loader2,
+  Paperclip,
+  Pencil,
+  RefreshCw,
+  Sparkles,
+  Square,
+  X,
+  Mic,
+  MicOff,
+} from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/chat/$threadId")({
@@ -128,6 +143,15 @@ function ChatThreadInner({
     },
   });
 
+  const { transcript, listening, resetTranscript, browserSupportsSpeechRecognition } =
+    useSpeechRecognition();
+
+  useEffect(() => {
+    if (transcript) {
+      setInput(transcript);
+    }
+  }, [transcript]);
+
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [imageMode, setImageMode] = useState(false);
@@ -140,9 +164,11 @@ function ChatThreadInner({
   const [userName, setUserName] = useState("");
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
-      const name = data.user?.user_metadata?.full_name ||
+      const name =
+        data.user?.user_metadata?.full_name ||
         data.user?.user_metadata?.name ||
-        data.user?.email?.split("@")[0] || "";
+        data.user?.email?.split("@")[0] ||
+        "";
       setUserName(name);
     });
   }, []);
@@ -211,9 +237,7 @@ function ChatThreadInner({
           m.id === placeholderId
             ? {
                 ...m,
-                parts: [
-                  { type: "file", mediaType: "image/png", url: json.imageUrl },
-                ],
+                parts: [{ type: "file", mediaType: "image/png", url: json.imageUrl }],
               }
             : m,
         ),
@@ -290,10 +314,14 @@ function ChatThreadInner({
                 <Sparkles className="h-5 w-5" />
               </div>
               <h2 className="mt-4 text-xl font-semibold">
-                {userName ? `${getGreeting()}, ${userName.split(" ")[0]}! 👋` : "How can I help you today?"}
+                {userName
+                  ? `${getGreeting()}, ${userName.split(" ")[0]}! 👋`
+                  : "How can I help you today?"}
               </h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                {userName ? "I'm Zohaib AI — ask me anything!" : "Ask anything — type below to begin."}
+                {userName
+                  ? "I'm Zohaib AI — ask me anything!"
+                  : "Ask anything — type below to begin."}
               </p>
               <div className="mt-8 grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2">
                 {SUGGESTIONS.map((s) => (
@@ -363,9 +391,7 @@ function ChatThreadInner({
                   <img src={a.url} alt={a.name} className="h-full w-full object-cover" />
                   <button
                     type="button"
-                    onClick={() =>
-                      setAttachments((prev) => prev.filter((_, idx) => idx !== i))
-                    }
+                    onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}
                     className="absolute right-0.5 top-0.5 grid h-5 w-5 place-items-center rounded-full bg-background/80 text-foreground opacity-0 transition group-hover:opacity-100"
                     aria-label={`Remove ${a.name}`}
                   >
@@ -402,7 +428,9 @@ function ChatThreadInner({
               onClick={() => setImageMode((v) => !v)}
               disabled={isBusy}
               className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl transition hover:bg-surface-2 disabled:opacity-40 ${
-                imageMode ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground"
+                imageMode
+                  ? "bg-primary/15 text-primary"
+                  : "text-muted-foreground hover:text-foreground"
               }`}
               aria-label="Generate image"
               title="Generate image"
@@ -427,17 +455,45 @@ function ChatThreadInner({
                 className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-foreground text-background hover:opacity-90 disabled:opacity-60"
                 aria-label="Stop"
               >
-                {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
+                {generating ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Square className="h-4 w-4" />
+                )}
               </button>
             ) : (
-              <button
-                type="submit"
-                disabled={!input.trim()}
-                className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground transition hover:opacity-90 disabled:opacity-40"
-                aria-label="Send"
-              >
-                <ArrowUp className="h-4 w-4" />
-              </button>
+              <>
+                {browserSupportsSpeechRecognition && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (listening) {
+                        SpeechRecognition.stopListening();
+                      } else {
+                        resetTranscript();
+                        SpeechRecognition.startListening({
+                          continuous: true,
+                          language: "en-US",
+                        });
+                      }
+                    }}
+                    className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl transition ${
+                      listening ? "bg-red-500 text-white" : "bg-secondary hover:opacity-90"
+                    }`}
+                    aria-label="Voice Input"
+                  >
+                    {listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  disabled={!input.trim()}
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground transition hover:opacity-90 disabled:opacity-40"
+                  aria-label="Send"
+                >
+                  <ArrowUp className="h-4 w-4" />
+                </button>
+              </>
             )}
           </div>
           <div className="flex items-center justify-between px-1">
@@ -538,9 +594,7 @@ function MessageView({
   editDisabled?: boolean;
 }) {
   const isUser = message.role === "user";
-  const text = message.parts
-    .map((p) => (p.type === "text" ? p.text : ""))
-    .join("");
+  const text = message.parts.map((p) => (p.type === "text" ? p.text : "")).join("");
   const files = message.parts.filter(
     (p): p is { type: "file"; mediaType: string; url: string } =>
       p.type === "file" && typeof (p as { url?: string }).url === "string",
@@ -637,11 +691,7 @@ function MessageView({
                 rel="noreferrer"
                 className="block overflow-hidden rounded-xl border border-border"
               >
-                <img
-                  src={f.url}
-                  alt="generated"
-                  className="max-h-96 max-w-full object-contain"
-                />
+                <img src={f.url} alt="generated" className="max-h-96 max-w-full object-contain" />
               </a>
             ))}
           </div>
