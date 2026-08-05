@@ -14,7 +14,7 @@ import {
 import { DEFAULT_MODEL } from "@/lib/models";
 import { Markdown } from "@/components/chat/markdown";
 import { ModelPicker } from "@/components/chat/model-picker";
-import { ArrowUp, Check, Copy, ImagePlus, Loader2, Paperclip, RefreshCw, Sparkles, Square, X } from "lucide-react";
+import { ArrowUp, Check, Copy, ImagePlus, Loader2, Paperclip, Pencil, RefreshCw, Sparkles, Square, X } from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/chat/$threadId")({
@@ -132,11 +132,11 @@ function ChatThreadInner({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [imageMode, setImageMode] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Get user name for welcome message
   const [userName, setUserName] = useState("");
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -262,9 +262,17 @@ function ChatThreadInner({
     }
   }
 
+  async function handleEditSave(messageId: string, newText: string) {
+    const idx = messages.findIndex((m) => m.id === messageId);
+    if (idx === -1) return;
+    const trimmed = messages.slice(0, idx);
+    setMessages(trimmed);
+    setEditingId(null);
+    await sendMessage({ text: newText });
+  }
+
   const empty = messages.length === 0;
 
-  // Get greeting based on time
   function getGreeting() {
     const hour = new Date().getHours();
     if (hour < 12) return "Good morning";
@@ -309,6 +317,11 @@ function ChatThreadInner({
                   message={m}
                   isLast={i === messages.length - 1 && m.role === "assistant"}
                   onRegenerate={() => regenerate({ messageId: m.id })}
+                  isEditing={editingId === m.id}
+                  onStartEdit={() => setEditingId(m.id)}
+                  onCancelEdit={() => setEditingId(null)}
+                  onSaveEdit={(newText) => handleEditSave(m.id, newText)}
+                  editDisabled={isBusy}
                 />
               </li>
             ))}
@@ -509,10 +522,20 @@ function MessageView({
   message,
   onRegenerate,
   isLast,
+  isEditing,
+  onStartEdit,
+  onCancelEdit,
+  onSaveEdit,
+  editDisabled,
 }: {
   message: UIMessage;
   onRegenerate?: () => void;
   isLast?: boolean;
+  isEditing?: boolean;
+  onStartEdit?: () => void;
+  onCancelEdit?: () => void;
+  onSaveEdit?: (newText: string) => void;
+  editDisabled?: boolean;
 }) {
   const isUser = message.role === "user";
   const text = message.parts
@@ -523,9 +546,49 @@ function MessageView({
       p.type === "file" && typeof (p as { url?: string }).url === "string",
   );
 
+  const [draft, setDraft] = useState(text);
+  useEffect(() => {
+    if (isEditing) setDraft(text);
+  }, [isEditing, text]);
+
   if (isUser) {
+    if (isEditing) {
+      return (
+        <div className="flex flex-col items-end gap-2">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                if (draft.trim()) onSaveEdit?.(draft.trim());
+              }
+              if (e.key === "Escape") onCancelEdit?.();
+            }}
+            rows={2}
+            autoFocus
+            className="max-w-[80%] min-w-60 rounded-2xl rounded-br-md border border-primary/50 bg-surface px-4 py-2.5 text-sm text-foreground outline-none"
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={() => draft.trim() && onSaveEdit?.(draft.trim())}
+              className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90"
+            >
+              Save & Resend
+            </button>
+            <button
+              onClick={onCancelEdit}
+              className="rounded-md border border-border px-3 py-1 text-xs text-muted-foreground hover:bg-surface-2"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     return (
-      <div className="flex flex-col items-end gap-2">
+      <div className="group flex flex-col items-end gap-2">
         {files.length > 0 && (
           <div className="flex flex-wrap justify-end gap-2">
             {files.map((f, i) => (
@@ -539,8 +602,19 @@ function MessageView({
           </div>
         )}
         {text && (
-          <div className="max-w-[80%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-sm text-primary-foreground whitespace-pre-wrap">
-            {text}
+          <div className="flex max-w-[80%] items-start gap-1.5">
+            {!editDisabled && (
+              <button
+                onClick={onStartEdit}
+                className="mt-2 shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition hover:bg-surface-2 hover:text-foreground group-hover:opacity-100"
+                title="Edit message"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+            )}
+            <div className="rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-sm text-primary-foreground whitespace-pre-wrap">
+              {text}
+            </div>
           </div>
         )}
       </div>
