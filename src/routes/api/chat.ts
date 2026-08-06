@@ -474,7 +474,7 @@ export const Route = createFileRoute("/api/chat")({
         }
 
         const modelId = MODELS.find((m) => m.id === model)?.id ?? DEFAULT_MODEL;
-        const temp = temperature ?? 0.7;
+        const temp = Math.min(temperature ?? 0.7, 0.3);
 
         const lastUser = [...messages].reverse().find((m) => m.role === "user");
         const lastText = lastUser ? extractTextFromMessage(lastUser) : "";
