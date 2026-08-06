@@ -91,7 +91,7 @@ const webSearchTool = tool({
     query: z.string().describe("The search query"),
   }),
   execute: async ({ query }) => {
-    const tavilyKey = process.env.TAVILY_API_KEY;
+    const tavilyKey = process.env.TAVILY_API_KEY?.trim();
     if (!tavilyKey) {
       return { error: "Web search is not configured." };
     }
