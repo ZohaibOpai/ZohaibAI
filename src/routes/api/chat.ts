@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { streamText, type UIMessage } from "ai";
+import { streamText, tool, stepCountIs, type UIMessage } from "ai";
+import { z } from "zod";
 import { createClient } from "@supabase/supabase-js";
 import { createGroqProvider } from "@/lib/ai-gateway.server";
 import { DEFAULT_MODEL, MODELS } from "@/lib/models";
@@ -13,12 +14,6 @@ type ChatRequest = {
   conversationId?: string;
   model?: string;
   temperature?: number;
-};
-
-type MessagePart = {
-  type: string;
-  text?: string;
-  image?: string;
 };
 
 type UserPreferences = {
@@ -80,16 +75,62 @@ Your behavior:
 - If you're unsure about anything, ask clarifying questions.
 - Provide code examples when relevant.
 - Be empathetic and understanding.
+- You have access to a "webSearch" tool that fetches live, current information from the internet. Use it whenever the user asks about recent events, current facts, prices, news, weather, or anything that could have changed since your training data cutoff. Don't use it for general knowledge, coding help, or things you already know confidently. When you use search results, cite the source naturally in your answer (e.g. "According to [source]...").
 
 Current Date & Time: ${new Date().toLocaleString()}`;
 
 const CREATOR_VERIFIED_PROMPT = `\n\n⚠️ SYSTEM NOTICE: The user has been verified as Muhammad Zohaib Mazhar, your creator. Greet them warmly as "boss" and assist them with anything they need.`;
 
 // ============================================
+// WEB SEARCH TOOL (Tavily)
+// ============================================
+const webSearchTool = tool({
+  description:
+    "Search the live web for current information — news, prices, events, facts that may have changed recently, or anything requiring up-to-date data.",
+  inputSchema: z.object({
+    query: z.string().describe("The search query"),
+  }),
+  execute: async ({ query }) => {
+    const tavilyKey = process.env.TAVILY_API_KEY;
+    if (!tavilyKey) {
+      return { error: "Web search is not configured." };
+    }
+    try {
+      const res = await fetch("https://api.tavily.com/search", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${tavilyKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          search_depth: "basic",
+          max_results: 5,
+          include_answer: true,
+        }),
+      });
+      if (!res.ok) {
+        return { error: `Search failed with status ${res.status}` };
+      }
+      const data = await res.json();
+      return {
+        answer: data.answer ?? null,
+        results: (data.results ?? []).map((r: any) => ({
+          title: r.title,
+          url: r.url,
+          content: r.content,
+        })),
+      };
+    } catch (e) {
+      return { error: "Web search request failed." };
+    }
+  },
+});
+
+// ============================================
 // HELPER FUNCTIONS
 // ============================================
 
-// Extract text from message parts
 function extractTextFromMessage(msg: UIMessage): string {
   if (!msg || !msg.parts) return "";
   return msg.parts
@@ -99,7 +140,6 @@ function extractTextFromMessage(msg: UIMessage): string {
     .trim();
 }
 
-// Extract text from parts array
 function extractTextFromParts(parts: any): string {
   if (!parts) return "";
   if (!Array.isArray(parts)) return "";
@@ -110,7 +150,6 @@ function extractTextFromParts(parts: any): string {
     .trim();
 }
 
-// Convert parts to JSON-safe format for Supabase
 function partsToJson(parts: any): any {
   if (!parts || !Array.isArray(parts)) return [];
 
@@ -150,13 +189,11 @@ function partsToJson(parts: any): any {
   });
 }
 
-// Check if message contains harmful content
 function isHarmful(text: string): boolean {
   if (!text) return false;
   return HARMFUL_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-// Check for spam
 function isSpam(text: string): boolean {
   const repeatedChars = /(.)\1{5,}/.test(text);
   const allCaps = text === text.toUpperCase() && text.length > 10;
@@ -166,7 +203,6 @@ function isSpam(text: string): boolean {
   return repeatedChars || allCaps || excessiveEmoji || gibberish;
 }
 
-// Build system prompt based on preferences
 function buildSystemPrompt(
   isCreatorVerified: boolean,
   preferences?: UserPreferences | null
@@ -190,7 +226,6 @@ function buildSystemPrompt(
   return prompt;
 }
 
-// Check if user provided creator codeword
 function checkCreatorCodeword(messages: UIMessage[]): boolean {
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   if (!lastUser) return false;
@@ -198,14 +233,12 @@ function checkCreatorCodeword(messages: UIMessage[]): boolean {
   return text.toLowerCase().includes(CREATOR_CODEWORD.toLowerCase());
 }
 
-// Trim messages for context
 function trimMessagesForContext(messages: UIMessage[]): UIMessage[] {
   if (messages.length <= MAX_CONTEXT_MESSAGES) return messages;
   const recentMsgs = messages.slice(-MAX_CONTEXT_MESSAGES);
   return recentMsgs;
 }
 
-// Generate smart title
 function generateSmartTitle(text: string): string {
   const words = text.split(/\s+/);
   if (words.length <= 5) return text;
@@ -217,7 +250,6 @@ function generateSmartTitle(text: string): string {
 // DATABASE FUNCTIONS
 // ============================================
 
-// Get user preferences
 async function getUserPreferences(
   supabase: ReturnType<typeof createClient<Database>>,
   userId: string
@@ -242,7 +274,6 @@ async function getUserPreferences(
   };
 }
 
-// Log user activity
 async function logActivity(
   supabase: ReturnType<typeof createClient<Database>>,
   userId: string,
@@ -261,7 +292,6 @@ async function logActivity(
   }
 }
 
-// Check and grant achievements
 async function checkAchievements(
   supabase: ReturnType<typeof createClient<Database>>,
   userId: string,
@@ -313,9 +343,6 @@ export const Route = createFileRoute("/api/chat")({
       POST: async ({ request }) => {
         const requestId = crypto.randomUUID();
 
-        // ==========================================
-        // 1. ENVIRONMENT VALIDATION
-        // ==========================================
         const apiKey = process.env.GROQ_API_KEY;
         const supabaseUrl = process.env.SUPABASE_URL;
         const supabaseKey = process.env.SUPABASE_PUBLISHABLE_KEY;
@@ -329,9 +356,6 @@ export const Route = createFileRoute("/api/chat")({
           });
         }
 
-        // ==========================================
-        // 2. AUTHENTICATION
-        // ==========================================
         const auth = request.headers.get("authorization");
         const token = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
 
@@ -361,9 +385,6 @@ export const Route = createFileRoute("/api/chat")({
 
         const userId = claims.claims.sub as string;
 
-        // ==========================================
-        // 3. RATE LIMITING
-        // ==========================================
         try {
           const { data: recentRequests } = await supabase
             .from("api_usage")
@@ -387,15 +408,11 @@ export const Route = createFileRoute("/api/chat")({
           console.error("Rate limit check failed:", error);
         }
 
-        // Log this request
         await logActivity(supabase, userId, "api_request", {
           endpoint: "/api/chat",
           request_id: requestId,
         });
 
-        // ==========================================
-        // 4. MODERATION CHECK
-        // ==========================================
         const { data: modRecord, error: modError } = await supabase
           .from("user_moderation")
           .select("*")
@@ -406,7 +423,6 @@ export const Route = createFileRoute("/api/chat")({
           console.error("Moderation error:", modError);
         }
 
-        // Check if user is banned
         if (modRecord?.is_banned) {
           const bannedUntil = modRecord.banned_until
             ? new Date(modRecord.banned_until)
@@ -428,7 +444,6 @@ export const Route = createFileRoute("/api/chat")({
               }
             );
           } else {
-            // Ban expired - lift it
             await supabase
               .from("user_moderation")
               .update({
@@ -441,9 +456,6 @@ export const Route = createFileRoute("/api/chat")({
           }
         }
 
-        // ==========================================
-        // 5. REQUEST PARSING
-        // ==========================================
         let body: ChatRequest;
         try {
           body = (await request.json()) as ChatRequest;
@@ -464,13 +476,9 @@ export const Route = createFileRoute("/api/chat")({
         const modelId = MODELS.find((m) => m.id === model)?.id ?? DEFAULT_MODEL;
         const temp = temperature ?? 0.7;
 
-        // ==========================================
-        // 6. HARMFUL CONTENT & SPAM CHECK
-        // ==========================================
         const lastUser = [...messages].reverse().find((m) => m.role === "user");
         const lastText = lastUser ? extractTextFromMessage(lastUser) : "";
 
-        // Spam check
         if (lastText && isSpam(lastText)) {
           await logActivity(supabase, userId, "spam_blocked", {
             text: lastText.slice(0, 100),
@@ -488,7 +496,6 @@ export const Route = createFileRoute("/api/chat")({
           );
         }
 
-        // Harmful content check
         if (lastText && isHarmful(lastText)) {
           const currentWarnings = modRecord?.warnings ?? 0;
           const newWarnings = currentWarnings + 1;
@@ -497,7 +504,6 @@ export const Route = createFileRoute("/api/chat")({
             ? new Date(Date.now() + BAN_DURATION_HOURS * 60 * 60 * 1000).toISOString()
             : null;
 
-          // Save warning
           await supabase
             .from("user_moderation")
             .upsert({
@@ -541,9 +547,6 @@ export const Route = createFileRoute("/api/chat")({
           );
         }
 
-        // ==========================================
-        // 7. CONVERSATION VERIFICATION
-        // ==========================================
         const { data: conv, error: convError } = await supabase
           .from("conversations")
           .select("id, user_id, title")
@@ -561,14 +564,8 @@ export const Route = createFileRoute("/api/chat")({
           });
         }
 
-        // ==========================================
-        // 8. GET USER PREFERENCES
-        // ==========================================
         const preferences = await getUserPreferences(supabase, userId);
 
-        // ==========================================
-        // 9. SAVE USER MESSAGE (Avoid duplicates)
-        // ==========================================
         if (lastUser) {
           const { data: existingMsg } = await supabase
             .from("messages")
@@ -596,9 +593,6 @@ export const Route = createFileRoute("/api/chat")({
           }
         }
 
-        // ==========================================
-        // 10. AUTO-TITLE (Smart)
-        // ==========================================
         if (conv.title === "New chat" && lastUser && lastText) {
           const title = generateSmartTitle(lastText);
           if (title) {
@@ -609,9 +603,6 @@ export const Route = createFileRoute("/api/chat")({
           }
         }
 
-        // ==========================================
-        // 11. UPDATE MODEL
-        // ==========================================
         await supabase
           .from("conversations")
           .update({
@@ -620,15 +611,11 @@ export const Route = createFileRoute("/api/chat")({
           })
           .eq("id", conversationId);
 
-        // ==========================================
-        // 12. GET MESSAGE COUNT FOR ACHIEVEMENTS
-        // ==========================================
         const { count: messageCount } = await supabase
           .from("messages")
           .select("*", { count: 'exact', head: true })
           .eq("user_id", userId);
 
-        // Check achievements in background
         if (messageCount && messageCount > 0) {
           checkAchievements(supabase, userId, messageCount).then(
             (newAchievements) => {
@@ -639,16 +626,11 @@ export const Route = createFileRoute("/api/chat")({
           );
         }
 
-        // ==========================================
-        // 13. GENERATE AI RESPONSE
-        // ==========================================
         const isCreatorVerified = checkCreatorCodeword(messages);
         const gateway = createGroqProvider(apiKey);
 
-        // Trim messages for context
         const trimmedMessages = trimMessagesForContext(messages);
 
-        // Convert messages for the model
         const modelMessages = trimmedMessages.map((msg) => ({
           role: msg.role,
           content: extractTextFromMessage(msg),
@@ -660,7 +642,10 @@ export const Route = createFileRoute("/api/chat")({
             system: buildSystemPrompt(isCreatorVerified, preferences),
             messages: modelMessages,
             temperature: temp,
-            // maxTokens: 4096, // Uncomment if your library supports it
+            tools: {
+              webSearch: webSearchTool,
+            },
+            stopWhen: stepCountIs(5),
           });
 
           return result.toUIMessageStreamResponse({
