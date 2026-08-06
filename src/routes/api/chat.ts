@@ -110,6 +110,8 @@ const webSearchTool = tool({
         }),
       });
       if (!res.ok) {
+        const errBody = await res.text().catch(() => "");
+        console.error("Tavily search failed:", res.status, errBody);
         return { error: `Search failed with status ${res.status}` };
       }
       const data = await res.json();
@@ -121,10 +123,11 @@ const webSearchTool = tool({
           content: r.content,
         })),
       };
-    } catch (e) {
+    } catch(e) {
+      console.error("Tavily fetch error:", e);
       return { error: "Web search request failed." };
     }
-  },
+},
 });
 
 // ============================================
