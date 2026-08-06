@@ -19,6 +19,7 @@ import {
   ArrowUp,
   Check,
   Copy,
+  Download,
   ImagePlus,
   Loader2,
   Paperclip,
@@ -105,6 +106,7 @@ function ChatThreadInner({
   onModelChange: (model: string) => Promise<void>;
 }) {
   const [model, setModel] = useState(initialModel || DEFAULT_MODEL);
+  const [exportOpen, setExportOpen] = useState(false);
   const modelRef = useRef(model);
   modelRef.current = model;
 
@@ -306,6 +308,41 @@ function ChatThreadInner({
 
   return (
     <div className="flex h-full flex-1 flex-col">
+      {messages.length > 0 && (
+        <div className="flex justify-end border-b border-border px-4 py-2">
+          <div className="relative">
+            <button
+              onClick={() => setExportOpen((v) => !v)}
+              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-surface-2 hover:text-foreground transition"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export
+            </button>
+            {exportOpen && (
+              <div className="absolute right-0 top-full z-10 mt-1 w-32 rounded-md border border-border bg-surface shadow-lg">
+                <button
+                  onClick={() => {
+                    exportChatAsText(messages, "Zohaib AI Chat");
+                    setExportOpen(false);
+                  }}
+                  className="block w-full px-3 py-2 text-left text-xs hover:bg-surface-2"
+                >
+                  As .txt
+                </button>
+                <button
+                  onClick={() => {
+                    exportChatAsPdf(messages, "Zohaib AI Chat");
+                    setExportOpen(false);
+                  }}
+                  className="block w-full px-3 py-2 text-left text-xs hover:bg-surface-2"
+                >
+                  As PDF
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl px-4 py-8">
           {empty && (
@@ -539,7 +576,63 @@ function attachmentsToFileList(items: Attachment[]): FileList {
   for (const a of items) dt.items.add(dataUrlToFile(a.url, a.name, a.mediaType));
   return dt.files;
 }
+function exportChatAsText(messages: UIMessage[], title: string) {
+  const lines = messages.map((m) => {
+    const text = m.parts.map((p) => (p.type === "text" ? p.text : "")).join("");
+    const speaker = m.role === "user" ? "You" : "Zohaib AI";
+    return `${speaker}:\n${text}\n`;
+  });
+  const content = `${title}\n${"=".repeat(title.length)}\n\n${lines.join("\n")}`;
+  const blob = new Blob([content], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${title.slice(0, 40)}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
+async function exportChatAsPdf(messages: UIMessage[], title: string) {
+  const { jsPDF } = await import("jspdf");
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const margin = 15;
+  const maxWidth = pageWidth - margin * 2;
+  let y = 20;
+
+  doc.setFontSize(16);
+  doc.text(title, margin, y);
+  y += 10;
+  doc.setFontSize(11);
+
+  for (const m of messages) {
+    const text = m.parts.map((p) => (p.type === "text" ? p.text : "")).join("");
+    if (!text) continue;
+    const speaker = m.role === "user" ? "You" : "Zohaib AI";
+
+    if (y > 280) {
+      doc.addPage();
+      y = 20;
+    }
+    doc.setFont("helvetica", "bold");
+    doc.text(`${speaker}:`, margin, y);
+    y += 6;
+    doc.setFont("helvetica", "normal");
+
+    const splitText = doc.splitTextToSize(text, maxWidth);
+    for (const line of splitText) {
+      if (y > 280) {
+        doc.addPage();
+        y = 20;
+      }
+      doc.text(line, margin, y);
+      y += 6;
+    }
+    y += 4;
+  }
+
+  doc.save(`${title.slice(0, 40)}.pdf`);
+}
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
 
